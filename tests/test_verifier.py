@@ -167,3 +167,94 @@ def test_entra_auth_kwargs_sans_tenant_id_leve_une_erreur_claire(monkeypatch):
     monkeypatch.delenv("MCP_ENTRA_TENANT_ID", raising=False)
     with pytest.raises(RuntimeError, match="MCP_ENTRA_TENANT_ID"):
         entra_auth_kwargs(required_scope="MonServeur.Read")
+
+
+# --- apply_entra_auth (serveur deja construit, cf. ecoledirecte-admin-mcp) ---
+
+from mcp_entra_auth import apply_entra_auth  # noqa: E402
+from mcp.server.mcpserver import MCPServer  # noqa: E402
+
+
+def test_apply_entra_auth_attache_verifier_et_auth_settings(monkeypatch):
+    monkeypatch.setenv("MCP_ENTRA_TENANT_ID", TENANT_ID)
+    monkeypatch.setenv("MCP_ENTRA_APP_ID_URI", APP_ID_URI)
+    server = MCPServer(name="deja-construit")
+    assert server.settings.auth is None
+
+    result = apply_entra_auth(server, required_scope="MonServeur.Read")
+
+    assert result is server
+    assert server.settings.auth is not None
+    assert server._token_verifier is not None
+    assert server._token_verifier.required_scope == "MonServeur.Read"
+
+
+def test_apply_entra_auth_conserve_les_outils_deja_enregistres(monkeypatch):
+    """Le cas reel : @mcp.tool() a deja tourne a l'import, avant apply_entra_auth."""
+    monkeypatch.setenv("MCP_ENTRA_TENANT_ID", TENANT_ID)
+    monkeypatch.setenv("MCP_ENTRA_APP_ID_URI", APP_ID_URI)
+    server = MCPServer(name="deja-construit")
+
+    @server.tool()
+    def mon_outil() -> str:
+        return "ok"
+
+    apply_entra_auth(server, required_scope="MonServeur.Read")
+
+    run(server.list_tools())  # ne doit pas lever - l'ajout d'auth ne touche pas aux outils
+
+
+def test_apply_entra_auth_fonctionne_en_conditions_reelles(monkeypatch):
+    """Verifie le comportement live (pas seulement la presence des attributs) :
+    un serveur construit sans auth, sur lequel apply_entra_auth() est appele
+    juste avant run(), doit effectivement rejeter une requete sans jeton -
+    confirme que MCPServer.run_streamable_http_async() lit bien
+    self.settings.auth / self._token_verifier au moment de l'appel, et pas
+    seulement a la construction (ce qui validerait l'approche pour un projet
+    dont les outils sont deja enregistres sur l'instance module-level)."""
+    import socket
+    import threading
+    import time as time_mod
+
+    import uvicorn
+
+    monkeypatch.setenv("MCP_ENTRA_TENANT_ID", TENANT_ID)
+    monkeypatch.setenv("MCP_ENTRA_APP_ID_URI", APP_ID_URI)
+
+    server = MCPServer(name="deja-construit-live")
+
+    @server.tool()
+    def mon_outil() -> str:
+        return "ok"
+
+    apply_entra_auth(server, required_scope="MonServeur.Read")
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+
+    app = server.streamable_http_app()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    uv_server = uvicorn.Server(config)
+
+    thread = threading.Thread(target=uv_server.run, daemon=True)
+    thread.start()
+    try:
+        for _ in range(50):
+            try:
+                httpx.get(f"http://127.0.0.1:{port}/mcp", timeout=0.2)
+                break
+            except httpx.TransportError:
+                time_mod.sleep(0.1)
+
+        resp = httpx.post(
+            f"http://127.0.0.1:{port}/mcp",
+            headers={"Accept": "application/json, text/event-stream", "Content-Type": "application/json"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            timeout=5,
+        )
+        assert resp.status_code == 401
+    finally:
+        uv_server.should_exit = True
+        thread.join(timeout=5)

@@ -8,10 +8,14 @@ from __future__ import annotations
 import logging
 import os
 import time
+from typing import TYPE_CHECKING
 
 import httpx
 import jwt
 from mcp.server.auth.provider import AccessToken, TokenVerifier
+
+if TYPE_CHECKING:
+    from mcp.server.mcpserver import MCPServer
 
 logger = logging.getLogger("mcp_entra_auth")
 
@@ -123,6 +127,14 @@ def entra_auth_kwargs(
     au constructeur de MCPServer, pour un transport streamable-http avec
     authentification Entra ID.
 
+    A utiliser quand le projet consommateur construit son serveur via une
+    fonction (ex. build_server(transport) - voir charlemagne-mcp). Pour un
+    projet dont le serveur MCP est deja construit au niveau module (les
+    outils sont enregistres via @mcp.tool() a l'import, comme
+    ecoledirecte-admin-mcp), voir apply_entra_auth() ci-dessous a la place -
+    restructurer un serveur existant en build_server()/register_tools()
+    serait trop invasif pour un simple changement de transport.
+
     required_scope : nom du scope Entra ID que ce serveur exige (ex.
         "Charlemagne.Read", "EcoleDirecteAdmin.Read", "Edumoov.Read") -
         propre a chaque serveur, jamais partage entre projets.
@@ -154,6 +166,47 @@ def entra_auth_kwargs(
             validate_token_resource=False,
         ),
     }
+
+
+def apply_entra_auth(
+    server: "MCPServer",
+    required_scope: str,
+    *,
+    tenant_id: str | None = None,
+    app_id_uri: str | None = None,
+    allowed_group_id: str | None = None,
+    public_url: str | None = None,
+) -> "MCPServer":
+    """Variante de entra_auth_kwargs() pour un serveur MCP deja construit (le
+    cas frequent d'un module server.py qui fait `mcp = MCPServer(...)` au
+    niveau module, avec les outils enregistres via @mcp.tool() directement a
+    l'import - ecoledirecte-admin-mcp, ecoledirecte-perso-mcp).
+
+    Attache l'authentification Entra ID directement sur l'instance passee, et
+    la retourne (mutee en place, pour permettre `mcp = apply_entra_auth(mcp, ...)`
+    ou un simple appel). A n'appeler que juste avant
+    `server.run(transport="streamable-http", ...)` - jamais pour stdio, qui
+    n'a besoin d'aucune authentification (process local deja prive).
+
+    Fonctionne car MCPServer.run_streamable_http_async() lit
+    `self.settings.auth` et `self._token_verifier` au moment de l'appel (pas
+    a la construction) : verifie par lecture du code source de mcp==2.2.0.
+    `settings.auth` est une API publique du SDK ; `_token_verifier` est un
+    attribut prive - a revalider si la version du SDK `mcp` change (voir
+    tests/test_verifier.py::test_apply_entra_auth_fonctionne_en_conditions_reelles,
+    qui verifie le comportement live, pas seulement la presence des
+    attributs).
+    """
+    kwargs = entra_auth_kwargs(
+        required_scope,
+        tenant_id=tenant_id,
+        app_id_uri=app_id_uri,
+        allowed_group_id=allowed_group_id,
+        public_url=public_url,
+    )
+    server.settings.auth = kwargs["auth"]
+    server._token_verifier = kwargs["token_verifier"]  # noqa: SLF001 - voir docstring
+    return server
 
 
 def _require_env(name: str) -> str:

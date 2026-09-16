@@ -18,6 +18,11 @@ git+https://github.com/aghulas/mcp-entra-auth.git
 
 ## Usage
 
+Deux facons de l'utiliser, selon comment le projet consommateur construit son
+serveur MCP.
+
+### 1. Serveur construit via une fonction (ex. charlemagne-mcp)
+
 ```python
 import os
 from mcp.server.mcpserver import MCPServer
@@ -42,7 +47,7 @@ Dans `__main__.py` :
 
 ```python
 import argparse
-from .server import build_server, register_tools  # ou mcp deja construit selon le style du projet
+from .server import build_server, register_tools
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -59,6 +64,35 @@ def main() -> None:
     else:
         server.run(transport="streamable-http", host=args.host, port=args.port)
 ```
+
+### 2. Serveur deja construit au niveau module (ex. ecoledirecte-admin-mcp)
+
+Quand `server.py` fait deja `mcp = MCPServer(...)` au niveau module avec les
+outils enregistres via `@mcp.tool()` directement a l'import, restructurer en
+`build_server()`/`register_tools()` serait trop invasif pour un simple ajout
+de transport HTTP. `apply_entra_auth()` attache l'authentification sur
+l'instance existante, sans toucher `server.py` :
+
+```python
+# server.py : totalement inchange
+from .server import mcp
+
+# __main__.py : seul fichier modifie
+from mcp_entra_auth import apply_entra_auth
+
+def main() -> None:
+    ...
+    if args.transport == "streamable-http":
+        apply_entra_auth(mcp, required_scope="MonServeur.Read")
+        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+    else:
+        mcp.run(transport="stdio")
+```
+
+`apply_entra_auth` doit toujours être appelé juste avant `mcp.run(...)`,
+jamais avant (voir sa docstring pour le détail technique : il s'appuie sur le
+fait que `MCPServer` lit `settings.auth` / le vérificateur de jeton au moment
+de l'appel à `run()`, pas à la construction).
 
 ## Variables d'environnement (transport streamable-http uniquement)
 

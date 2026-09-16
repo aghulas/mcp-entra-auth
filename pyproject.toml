@@ -1,6 +1,6 @@
 [project]
 name = "mcp-entra-auth"
-version = "0.1.0"
+version = "0.2.0"
 description = "Authentification Entra ID (Azure AD) reutilisable pour un serveur MCP en transport streamable-http (Copilot 365 / Copilot Studio)"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "uvicorn>=0.30",
 ]
 
 [build-system]
